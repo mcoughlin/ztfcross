@@ -1,0 +1,184 @@
+#!/usr/bin/env python
+
+import os, sys, optparse, shutil
+import numpy as np
+from matplotlib import pyplot as plt
+
+import astropy
+from astropy import units as u
+from astropy.coordinates import SkyCoord
+from astropy.table import Table
+from astropy.io import ascii
+
+from astroquery.vizier import Vizier
+
+import matplotlib.path as mplPath
+import h5py    
+from astropy.io import fits
+import aplpy
+
+import requests
+from lxml.html import fromstring
+
+import ztfsub.utils, ztfsub.surveys
+import ztfsub.plotting
+
+import scipy
+from scipy.optimize import curve_fit
+
+def parse_commandline():
+    """
+    Parse the options given on the command-line.
+    """
+    parser = optparse.OptionParser()
+
+    parser.add_option("-o","--outputDir",default="../output")
+    parser.add_option("-f","--fitsfile",default="../data/ztf_20180211569375_000478_zr_c07_o.fits.fz")
+    parser.add_option("--doPlots",  action="store_true", default=False)
+
+    opts, args = parser.parse_args()
+
+    return opts
+
+def ps1_query(ra_deg, dec_deg, rad_deg, maxmag=20,
+               maxsources=10000):
+    """
+    Query Pan-STARRS @ VizieR using astroquery.vizier
+    parameters: ra_deg, dec_deg, rad_deg: RA, Dec, field
+                                          radius in degrees
+                maxmag: upper limit G magnitude (optional)
+                maxsources: maximum number of sources
+    returns: astropy.table object
+    """
+    vquery = Vizier(columns=['Source', 'RAJ2000', 'DEJ2000',
+                             'gmag','rmag','imag','zmag','ymag'],
+                    column_filters={"gmag":
+                                    ("<%f" % maxmag),
+                                   "imag":
+                                    ("<%f" % maxmag)},
+                    row_limit = maxsources)
+
+    field = SkyCoord(ra=ra_deg, dec=dec_deg,
+                           unit=(u.deg, u.deg),
+                           frame='icrs')
+    return vquery.query_region(field,
+                               width=("%fd" % rad_deg),
+                               catalog="II/349/ps1")[0]
+
+# Parse command line
+opts = parse_commandline()
+outputDir = opts.outputDir
+fitsfile = opts.fitsfile
+
+fitsfileSplit = opts.fitsfile.split("/")[-1].replace(".fits.fz","")
+path_out_dir='%s/%s/'%(outputDir,fitsfileSplit)
+if not os.path.isdir(path_out_dir):
+    os.makedirs(path_out_dir)
+
+hdu = astropy.io.fits.open(fitsfile)
+
+lines = np.shape(hdu[1].data)[0]
+active_pixels = np.shape(hdu[1].data)[1]
+overscan = np.shape(hdu[5].data)[1]
+npix = active_pixels+overscan
+
+raw = np.zeros((4,lines,npix))
+kks = [0,1,2,3]
+for kk in kks:
+    raw[kk] =  np.concatenate((hdu[kk+1].data, hdu[kk+5].data),1)
+
+if opts.doPlots:
+    for kk in kks:
+        plotName = os.path.join(path_out_dir,'raw_%d.pdf'%kk)
+        plt.figure()
+        plt.imshow(raw[kk],vmin=np.percentile(raw[kk],5),vmax=np.percentile(raw[kk],95),origin="lower-left")
+        plt.tight_layout()
+        plt.savefig(plotName)
+        plt.close()
+
+npix = 500
+xcorrs = np.zeros((4,npix,npix))
+for kk in kks:
+    for ii in xrange(npix):
+        for jj in xrange(npix):
+            corr = np.corrcoef(raw[kk,:,ii], raw[kk,:,jj])
+            xcorrs[kk,ii,jj] = corr[1,0]
+
+for kk in kks:
+    filename = os.path.join(path_out_dir,'xcorr_%d.dat'%kk)
+    fid = open(filename,'w')
+    for ii in xrange(npix):
+        for jj in xrange(npix):
+            fid.write("%.5f "%(xcorrs[kk,ii,jj]))
+        fid.write("\n")
+    fid.close()
+
+if opts.doPlots:
+    for kk in kks:
+        plotName = os.path.join(path_out_dir,'xcorr_%d.pdf'%kk)
+        plt.figure()
+        plt.imshow(xcorrs[kk],vmin=np.percentile(xcorrs[kk],5),vmax=np.percentile(xcorrs[kk],95),origin="lower-left")
+        cbar = plt.colorbar()
+        cbar.set_label("Cross Correlation")
+        plt.tight_layout()
+        plt.savefig(plotName)
+        plt.close()
+print stop
+
+ra_deg = (np.max(cat[:,4]) + np.min(cat[:,4]))/2.0
+dec_deg = (np.max(cat[:,5]) + np.min(cat[:,5]))/2.0
+
+result = ps1_query(ra_deg, dec_deg, 1.0, maxmag=20,
+               maxsources=10000)
+
+coo_wasp = SkyCoord(tbl['RA']*u.deg, tbl['Declination']*u.deg)
+coo_ps1 = SkyCoord(result['RAJ2000'], result['DEJ2000'])
+idx_ps1, d2d_ps1, d3d_ps1 = coo_wasp.match_to_catalog_sky(coo_ps1)
+
+
+def linear_fit(x):
+    return m * x + b
+xdata, ydata, yerr = np.array(result[idx_ps1]["gmag"]), np.array(tbl["mag"]), np.array(tbl["magerr"])
+#y_fit = linear_fit(xdata, 1, 2)
+#popt, pcov = curve_fit(linear_fit, xdata, ydata, sigma=yerr, p0=[1.0,-50.0], bounds=([-100.0,-100.0],[100.0, 100.0]))
+
+z = np.polyfit(xdata, ydata, 1)
+p = np.poly1d(z)
+
+if opts.doPlots:
+    plotName = os.path.join(path_out_dir,'match.pdf')
+    plt.hist(d2d_ps1.arcsec, histtype='step', range=(0,100))
+    plt.xlabel('separation [arcsec]')
+    plt.tight_layout()
+    plt.savefig(plotName)
+    plt.close()
+
+    plotName = os.path.join(path_out_dir,'colors.pdf')
+    plt.errorbar(result[idx_ps1]["gmag"],tbl["mag"],tbl["magerr"],fmt='ko')
+    plt.plot(result[idx_ps1]["gmag"],p(result[idx_ps1]["gmag"]),'r--')
+    plt.xlabel('PS1 (g) [mag]')
+    plt.ylabel('WASP [mag]')
+    plt.xlim([12,20])
+    plt.ylim([-18,-8])
+
+    plt.gca().invert_xaxis()
+    plt.gca().invert_yaxis()
+    plt.savefig(plotName)
+    plt.close()
+
+if opts.doPlots:
+    catfile = scienceimage.replace(".fits",".cat")
+    plotName = os.path.join(path_out_dir,'fits.pdf')
+    ztfsub.plotting.plot_image(scienceimage,plotName,catfile=catfile)
+
+coo_star = SkyCoord(ra_star*u.deg, dec_star*u.deg)
+idx_wasp, d2d_wasp, d3d_wasp = coo_star.match_to_catalog_sky(coo_wasp)
+
+filename = os.path.join(path_out_dir,'star.dat')
+fid = open(filename,'w')
+fid.write('%.5f %.5f %.5f %.5f %.5f %.5f %.5f %.5f %.5f\n'%(tbl[idx_wasp]["X"],tbl[idx_wasp]["Y"],tbl[idx_wasp]["RA"],tbl[idx_wasp]["Declination"],tbl[idx_wasp]["mag"],tbl[idx_wasp]["magerr"],result[idx_ps1[idx_wasp]]["RAJ2000"],result[idx_ps1[idx_wasp]]["DEJ2000"],result[idx_ps1[idx_wasp]]["gmag"]))
+fid.close()
+
+rm_command = "rm %s/*.fits"%path_out_dir
+os.system(rm_command)
+

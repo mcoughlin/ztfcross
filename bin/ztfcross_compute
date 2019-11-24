@@ -1,127 +1,343 @@
-#!/usr/bin/env python
+# ZTF starflat analysis 
 
-import os, sys, optparse, shutil
+import os
 import numpy as np
-from matplotlib import pyplot as plt
+import glob
+import optparse
+#import aplpy
 
-import astropy
-from astropy import units as u
-from astropy.coordinates import SkyCoord
-from astropy.table import Table
-from astropy.io import ascii
+import matplotlib
+#matplotlib.rc('text', usetex=True)
+matplotlib.use('Agg')
+matplotlib.rcParams.update({'font.size': 16})
+matplotlib.rcParams['contour.negative_linestyle'] = 'solid'
+import matplotlib.colors as colors
+import matplotlib.cm as cmx
+import matplotlib.pyplot as plt
+from matplotlib.colors import LogNorm
+from mpl_toolkits.axes_grid1 import make_axes_locatable
 
-from astroquery.vizier import Vizier
+from astropy.time import Time, TimeDelta
+import astropy.units as u
 
-import matplotlib.path as mplPath
-import h5py    
 from astropy.io import fits
+from astropy.table import Table, vstack
+
+import tqdm
 import aplpy
-
-import requests
-from lxml.html import fromstring
-
-import ztfsub.utils, ztfsub.surveys
-import ztfsub.plotting
-
-import scipy
-from scipy.optimize import curve_fit
 
 def parse_commandline():
     """
     Parse the options given on the command-line.
     """
     parser = optparse.OptionParser()
-
-    parser.add_option("-o","--outputDir",default="../output")
-    parser.add_option("-f","--fitsfile",default="../data/ztf_20180211569375_000478_zr_c07_o.fits.fz")
     parser.add_option("--doPlots",  action="store_true", default=False)
+    parser.add_option("--doImages",  action="store_true", default=False)
+    parser.add_option("--doWriteFits",  action="store_true", default=False)
+    parser.add_option("--doMosaic",  action="store_true", default=False)
+
+    parser.add_option("-d","--dataDir",default="../data/1027/081447/")
+    parser.add_option("-o","--outputDir",default="../output")
 
     opts, args = parser.parse_args()
 
     return opts
 
-def ps1_query(ra_deg, dec_deg, rad_deg, maxmag=20,
-               maxsources=10000):
-    """
-    Query Pan-STARRS @ VizieR using astroquery.vizier
-    parameters: ra_deg, dec_deg, rad_deg: RA, Dec, field
-                                          radius in degrees
-                maxmag: upper limit G magnitude (optional)
-                maxsources: maximum number of sources
-    returns: astropy.table object
-    """
-    vquery = Vizier(columns=['Source', 'RAJ2000', 'DEJ2000',
-                             'gmag','rmag','imag','zmag','ymag'],
-                    column_filters={"gmag":
-                                    ("<%f" % maxmag),
-                                   "imag":
-                                    ("<%f" % maxmag)},
-                    row_limit = maxsources)
+def read_ccd(ccd):
+ 
+    chunks = []
+    rows = []
 
-    field = SkyCoord(ra=ra_deg, dec=dec_deg,
-                           unit=(u.deg, u.deg),
-                           frame='icrs')
-    return vquery.query_region(field,
-                               width=("%fd" % rad_deg),
-                               catalog="II/349/ps1")[0]
+    hdu = fits.open(ccd)
+
+    try:
+        lines = np.shape(hdu[1].data)[0]
+    except:
+        print("%s messed up..."%(ccd))
+        return []
+
+    active_pixels = np.shape(hdu[1].data)[1]
+    overscan = np.shape(hdu[5].data)[1]
+    npix = active_pixels+overscan
+   
+    raw = np.zeros((4,lines,npix))
+    raw = np.zeros((4,lines,active_pixels))
+    kk=0
+    raw[kk] = hdu[kk+1].data
+    kk=1
+    raw[kk] = hdu[kk+1].data[:,::-1]
+    kk=2
+    raw[kk] = hdu[kk+1].data[::-1,::-1]
+    kk=3                                                                        
+    raw[kk] = hdu[kk+1].data[::-1,:]
+
+    for kk in [0,1,2,3]:
+        raw[kk][np.isnan(raw[kk])] = 0.0 
+        raw[kk] -= np.median(raw[kk])
+        #raw[kk] -= np.median(raw[kk], axis=0)
+
+    return raw
+
+def get_file(datadir,imagenum,ccdnum):
+    ccdfile = glob.glob(os.path.join(datadir,'ztf_%d_*_c%02d_*.fits.fz'%(imagenum,ccdnum)))
+    if len(ccdfile) > 0:
+        return ccdfile[0]
+    else:
+        return None
+
+def rebin(a, new_shape):
+    M, N = a.shape
+    m, n = new_shape
+    if m<M:
+        mat = a.reshape((m,int(M/m),n,int(N/n))).mean(3).mean(1)
+        return mat
+    else:
+        return np.repeat(np.repeat(a, int(m/M), axis=0), int(n/N), axis=1)
+
+def combine_raw_files(ccds, outfile, gapX = 462, gapY = 645, fill_value = 0, downsample_x = 8, downsample_y=8):
+    gapX = int(gapX/downsample_x)
+    gapY = int(gapY/downsample_y)
+    rows = []
+    for ccdrow in tqdm.tqdm(range(4)):
+        for qrow in range(2):
+            chunks = []
+            for ccd in range(4):
+                hdulist = fits.open(ccds[4 * ccdrow + (4 - ccd) - 1])
+                if qrow == 0:
+                    img_data_1 = hdulist[3].data
+                    img_data_2 = hdulist[4].data
+                else:
+                    img_data_1 = hdulist[2].data
+                    img_data_2 = hdulist[1].data
+                # Z-scale
+                #img_data_1 = StandardScaler().fit_transform(img_data_1)
+                #img_data_2 = StandardScaler().fit_transform(img_data_2)
+                # Rotate by 180 degrees
+                img_data_1 = np.rot90(img_data_1, 2)
+                img_data_2 = np.rot90(img_data_2, 2)
+
+                M, N = img_data_1.shape
+                new_shape = (int(M/downsample_x),int(N/downsample_y))
+                img_data_1 = rebin(img_data_1, new_shape)
+                img_data_2 = rebin(img_data_2, new_shape)
+
+                x_gap = np.zeros((img_data_1.shape[0], gapX)) + fill_value
+                chunks.append(np.hstack((img_data_1, img_data_2)))
+            row_data = np.hstack((chunks[0], x_gap, chunks[1], x_gap, chunks[2], x_gap, chunks[3]))
+            rows.append(row_data)
+        if ccdrow < 3: rows.append(np.zeros((gapY, row_data.shape[1])) + fill_value)
+    # Increasing Dec is decreasing y
+    array = np.vstack(rows)
+    fits.writeto(outfile, array, header = fits.getheader(ccds[0], 0), overwrite = True)
 
 # Parse command line
 opts = parse_commandline()
-outputDir = opts.outputDir
-fitsfile = opts.fitsfile
 
-fitsfileSplit = opts.fitsfile.split("/")[-1].replace(".fits.fz","")
-path_out_dir='%s/%s/'%(outputDir,fitsfileSplit)
-if not os.path.isdir(path_out_dir):
-    os.makedirs(path_out_dir)
+# ----- settings ------ #
+datadir = opts.dataDir
+baseoutdir = opts.outputDir
 
-hdu = astropy.io.fits.open(fitsfile)
+dataDirSplit = list(filter(None,datadir.split("/")))
+imagenum = dataDirSplit[-1]
+datenum = dataDirSplit[-2]
 
-lines = np.shape(hdu[1].data)[0]
-active_pixels = np.shape(hdu[1].data)[1]
-overscan = np.shape(hdu[5].data)[1]
-npix = active_pixels+overscan
+outdir = os.path.join(baseoutdir, datenum, imagenum)
+imagedir = os.path.join(outdir,'images')
+fitsdir = os.path.join(outdir,'fits')
 
-raw = np.zeros((4,lines,npix))
+if not os.path.isdir(outdir):
+    os.makedirs(outdir)
+if not os.path.isdir(imagedir):
+    os.makedirs(imagedir)
+if not os.path.isdir(fitsdir):
+    os.makedirs(fitsdir)
+
+##################################
+#                                #
+#           PREPARATION          #
+#                                #
+##################################
+
+#ccdnums = [1,2,3,4]
+ccdnums = np.arange(1,17)
+#ccdnums = [14]
 kks = [0,1,2,3]
-for kk in kks:
-    raw[kk] =  np.concatenate((hdu[kk+1].data, hdu[kk+5].data),1)
+
+images = glob.glob(os.path.join(datadir,'*.fits.fz'))
+idx = []
+for ii, image in enumerate(images):
+    imagenum = int(image.split("/")[-1].split("_")[1])
+    field_id = int(image.split("/")[-1].split("_")[2])
+    ccd_id = int(image.split("/")[-1].split("_")[4][1:])
+
+if opts.doMosaic:
+    fitsfiles = sorted(images)
+    outfile = os.path.join(outdir,'mosaic.fits')
+    combine_raw_files(fitsfiles,outfile)
+
+    fig = plt.figure(figsize=(20,20))
+    f1 = aplpy.FITSFigure(outfile,figure=fig)
+    #f1.set_tick_labels_font(size='x-small')
+    #f1.set_axis_labels_font(size='small')
+    f1.show_grayscale(vmin=700,vmax=800)
+    plotName = os.path.join(plotdir,'mosaic.pdf')
+    fig.canvas.draw()
+    plt.savefig(plotName)
+    plt.close()    
+
+crossall = np.empty((0,6))
+for ii,ccdnum in enumerate(ccdnums):
+    print('Running ccd %d/%d' % (ii+1, len(ccdnums)))
+
+    ccdfile = get_file(datadir,imagenum,ccdnum)
+    if ccdfile is None:
+        print('Missing %d: ccd %d' % (imagenum,ccdnum))
+        continue
+    ccdfile_split = ccdfile.split("/")[-1]
+    raw = read_ccd(ccdfile)
+
+    if opts.doWriteFits:
+        for kk in [0,1,2,3]:
+            outfile = os.path.join(outdir,ccdfile_split.replace(".fits.fz","_%d.fits.fz" % (kk+1)))
+            if not os.path.isfile(outfile):
+                fits.writeto(outfile, raw[kk], 
+                        header = fits.getheader(ccdfile, 0), overwrite = True)
+
+    for kk in kks:
+        for ll in kks:
+            if kk == ll: continue
+            rawimage1, rawimage2 = raw[kk], raw[ll]
+
+            ycols, xcols = rawimage1.shape
+            cross = np.empty((0,3))
+            for cc in range(xcols):
+                aggressor, feature = rawimage1[:,cc], rawimage2[:,cc]
+
+                xmin = np.max([0, int(cc - 5)])
+                xmax = np.min([xcols-1, int(cc + 5)])
+                bkg1, bkg2 = rawimage2[:,xmin], rawimage2[:,xmax]
+
+                # We want bright+saturated values in the aggressor
+                # And normal(ish) values in the feature
+                #idx = np.where( (aggressor >= 61000) &
+                #                (np.abs(feature) <= 100) )[0]
+                
+                idx = np.where( (aggressor >= 61000) &
+                                (np.abs(feature) <= 100) &
+                                (np.abs(bkg1) <= 100) &
+                                (np.abs(bkg2) <= 100))[0]
+
+                if len(idx) > 0:
+                    bkg = (bkg1+bkg2)/2.0
+
+                    val = np.median(feature[idx]) - np.median(bkg[idx])
+                    cross = np.append(cross, np.atleast_2d([cc,val,len(idx)]), axis=0)
+
+                    if (len(idx) > 100) and (np.abs(val) > 10):
+                        crossall = np.append(crossall, np.atleast_2d([ii,kk,ll,cc,val,len(idx)]), axis=0)
+                        if not opts.doImages: continue
+
+                        xmin = np.max([0, int(cc - 20)])
+                        xmax = np.min([xcols-1, int(cc + 20)])
+
+                        plt.figure()
+                        plt.subplot(1, 2, 1)
+                        plt.imshow(rawimage1[:,xmin:xmax],norm=LogNorm(),origin="lower-left", aspect='auto')
+                        plt.gray()
+                        plt.subplot(1, 2, 2)
+                        fig = plt.imshow(rawimage2[:,xmin:xmax],vmin=[-100,100],origin="lower-left", aspect='auto')
+                        fig.axes.get_yaxis().set_visible(False)
+                        plt.suptitle('# pixels: %d, Median: %.1f' % (len(idx), val))
+                        plotName = os.path.join(imagedir,'crosstalk_%d_c%02d_%d_%d_%d.png'%(imagenum,ccdnum,kk+1,ll+1,cc))
+                        plt.savefig(plotName)
+                        plt.close()
+
+outfile = os.path.join(outdir,'crosstalk.dat')
+fid = open(outfile, 'w')
+for jj, row in enumerate(crossall):
+    ii, kk, ll, cc, val, nvald = row
+    fid.write('%d %d %d %d %.5f %d\n' %(ii, kk, ll, cc, val, nvald))
+fid.close()
+
+if crossall.size == 0:
+    print('No cross-talk measurement available... exiting.')
+    exit(0)
 
 if opts.doPlots:
-    for kk in kks:
-        plotName = os.path.join(path_out_dir,'raw_%d.pdf'%kk)
-        plt.figure()
-        plt.imshow(raw[kk],vmin=np.percentile(raw[kk],5),vmax=np.percentile(raw[kk],95),origin="lower-left")
-        plt.tight_layout()
-        plt.savefig(plotName)
-        plt.close()
-
-npix = 500
-xcorrs = np.zeros((4,npix,npix))
-for kk in kks:
-    for ii in xrange(npix):
-        for jj in xrange(npix):
-            corr = np.corrcoef(raw[kk,:,ii], raw[kk,:,jj])
-            xcorrs[kk,ii,jj] = corr[1,0]
-
-for kk in kks:
-    filename = os.path.join(path_out_dir,'xcorr_%d.dat'%kk)
-    fid = open(filename,'w')
-    for ii in xrange(npix):
-        for jj in xrange(npix):
-            fid.write("%.5f "%(xcorrs[kk,ii,jj]))
-        fid.write("\n")
-    fid.close()
-
-if opts.doPlots:
-    for kk in kks:
-        plotName = os.path.join(path_out_dir,'xcorr_%d.pdf'%kk)
-        plt.figure()
-        plt.imshow(xcorrs[kk],vmin=np.percentile(xcorrs[kk],5),vmax=np.percentile(xcorrs[kk],95),origin="lower-left")
-        cbar = plt.colorbar()
-        cbar.set_label("Cross Correlation")
-        plt.tight_layout()
-        plt.savefig(plotName)
-        plt.close()
-
-
+    xsize, ysize = 3072, 3080
+    
+    alpha = 0.4
+    color='k'
+    edgecolor='k'
+    
+    cmap = plt.cm.jet
+    cNorm  = colors.Normalize(vmin=np.min(crossall[:,4]), vmax=np.max(crossall[:,4]))
+    scalarMap = cmx.ScalarMappable(norm=cNorm,cmap=cmap)
+    
+    fig = plt.figure(figsize=(8,8))
+    ax  = fig.add_axes([0.1, 0.1, 0.7, 0.85]) # [left, bottom, width, height]
+    axc = fig.add_axes([0.85, 0.10, 0.05, 0.85])
+    
+    for ii,ccdnum in enumerate(ccdnums):
+        for kk in [0,1,2,3]:
+            if kk in [1,3]:
+                xplus = xsize*1.0
+            else:
+                xplus = 0.0
+            if kk in [2,3]:
+                yplus = ysize*1.0
+            else:
+                yplus = 0.0
+            xcorners = (ii * 2*xsize + xplus, ii * 2*xsize + xsize + xplus)
+            ycorners = (ii * 2*ysize + yplus, ii * 2*ysize + ysize + yplus)
+            corners = []
+            for x in xcorners:
+                for y in ycorners:
+                    corners.append([x,y])
+            corners = [corners[0], corners[1], corners[3], corners[2]]
+            corners = np.array(corners)
+            for jj in range(len(corners)):
+                idx1 = jj
+                if jj == len(corners)-1:
+                    idx2 = 0
+                else:
+                    idx2 = jj+1
+                ax.plot([corners[idx1][0],corners[idx2][0]],
+                        [corners[idx1][1],corners[idx2][1]],'k-')
+    
+    for jj, row in enumerate(crossall):
+        ii, kk, ll, cc, val, nvald = row
+        if kk in [1,3]:
+            xplus = xsize*1.0
+        else:
+            xplus = 0.0
+        if kk in [2,3]:
+            yplus = ysize*1.0
+        else:
+            yplus = 0.0
+        xval1 = ii * 2*xsize + xplus + cc
+        yval1 = ii * 2*ysize + yplus + ysize/2.0
+    
+        if ll in [1,3]:
+            xplus = xsize*1.0
+        else:
+            xplus = 0.0
+        if ll in [2,3]:
+            yplus = ysize*1.0
+        else:
+            yplus = 0.0
+        xval2 = ii * 2*xsize + xplus + cc
+        yval2 = ii * 2*ysize + yplus + ysize/2.0
+    
+        colorVal = scalarMap.to_rgba(val)
+        ax.arrow(xval1, yval1, xval2-xval1, yval2-yval1, color=colorVal,
+                 edgecolor=colorVal,
+                 width=0.1,
+                 head_width=100.0)
+    
+    cbar = matplotlib.colorbar.ColorbarBase(axc, cmap=cmap,
+                                            norm=cNorm,orientation='vertical')
+    
+    plotName = os.path.join(outdir,'crosstalk.pdf')
+    plt.savefig(plotName)
+    plt.close()

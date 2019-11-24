@@ -1,0 +1,24 @@
+
+import os, sys
+import glob
+import numpy as np
+
+datadirs = glob.glob("../data/1027/*")
+baseoutdir = "../output"
+
+for datadir in datadirs:
+    dataDirSplit = list(filter(None,datadir.split("/")))
+    imagenum = dataDirSplit[-1]
+    datenum = dataDirSplit[-2]
+
+    outdir = os.path.join(baseoutdir, datenum, imagenum)
+
+    filename = os.path.join(outdir,'crosstalk.dat')
+    if os.path.isfile(filename):
+        print('%s already exists... continuing.' % filename)
+        continue
+
+    system_call = "python ztfcross_compute --doPlots --doImages --dataDir %s" % datadir
+    print(system_call)
+    os.system(system_call)
+

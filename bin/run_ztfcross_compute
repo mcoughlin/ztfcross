@@ -14,15 +14,18 @@ import matplotlib.pyplot as plt
 from matplotlib.colors import LogNorm
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 
-datadirs = glob.glob("../data/1027/*")
-baseoutdir = "../output"
+basedatadir = "/home/mcoughlin/ZTF/ztfcross/data/1027"
+baseoutdir = "/home/mcoughlin/ZTF/ztfcross/output"
+
+datadirs = glob.glob(os.path.join(basedatadir,"*"))
 
 doPlots = True
 doAnalysis = False
+#doAnalysis = True
 ccdnums = np.arange(1,17)
 kks = [0,1,2,3]
 
-crossall = np.empty((0,6))
+crossall = np.empty((0,7))
 for datadir in datadirs:
     dataDirSplit = list(filter(None,datadir.split("/")))
     imagenum = dataDirSplit[-1]
@@ -51,9 +54,9 @@ for datadir in datadirs:
 
 outfile = os.path.join(baseoutdir,'crosstalk.dat')
 fid = open(outfile, 'w')
-for jj, row in enumerate(crossall):
-    ii, kk, ll, cc, val, nvald = row
-    fid.write('%d %d %d %d %.5f %d\n' %(ii, kk, ll, cc, val, nvald))
+for row in crossall:
+    ii, jj, kk, ll, cc, val, nvald = row
+    fid.write('%d %d %d %d %d %.5f %d\n' %(ii, jj, kk, ll, cc, val, nvald))
 fid.close()
 
 if doPlots:
@@ -64,72 +67,74 @@ if doPlots:
     edgecolor='k'
 
     cmap = plt.cm.jet
-    cNorm  = colors.Normalize(vmin=np.min(crossall[:,4]), vmax=np.max(crossall[:,4]))
+    cNorm  = colors.Normalize(vmin=np.min(crossall[:,5]), vmax=np.max(crossall[:,5]))
     scalarMap = cmx.ScalarMappable(norm=cNorm,cmap=cmap)
 
     fig = plt.figure(figsize=(8,8))
     ax  = fig.add_axes([0.1, 0.1, 0.7, 0.85]) # [left, bottom, width, height]
     axc = fig.add_axes([0.85, 0.10, 0.05, 0.85])
 
-    for ii,ccdnum in enumerate(ccdnums):
-        for kk in [0,1,2,3]:
-            if kk in [1,3]:
-                xplus = xsize*1.0
-            else:
-                xplus = 0.0
-            if kk in [2,3]:
-                yplus = ysize*1.0
-            else:
-                yplus = 0.0
-            xcorners = (ii * 2*xsize + xplus, ii * 2*xsize + xsize + xplus)
-            ycorners = (ii * 2*ysize + yplus, ii * 2*ysize + ysize + yplus)
+    qids = np.arange(64)
+    for qid1 in qids:
+        ii, kk = np.divmod(qid1,4)
+        for qid2 in qids:
+            jj, ll = np.divmod(qid2,4)
+            
+            if (kk==0) and (ll==0):
+                xcorners = (qid1 * xsize, qid1 * xsize + 4*xsize)
+                ycorners = (qid2 * ysize, qid2 * ysize + 4*ysize)
+                corners = [] 
+                for x in xcorners:
+                    for y in ycorners: 
+                        corners.append([x,y])
+                corners = [corners[0], corners[1], corners[3], corners[2]]
+                corners = np.array(corners)
+                for mm in range(len(corners)):
+                    idx1 = mm
+                    if mm == len(corners)-1:
+                        idx2 = 0
+                    else:
+                        idx2 = mm+1
+                    ax.plot([corners[idx1][0],corners[idx2][0]],
+                            [corners[idx1][1],corners[idx2][1]],'k-',alpha=1.0)                
+            xcorners = (qid1 * xsize, qid1 * xsize + xsize)
+            ycorners = (qid2 * ysize, qid2 * ysize + ysize)
             corners = []
             for x in xcorners:
                 for y in ycorners:
                     corners.append([x,y])
             corners = [corners[0], corners[1], corners[3], corners[2]]
             corners = np.array(corners)
-            for jj in range(len(corners)):
-                idx1 = jj
-                if jj == len(corners)-1:
+            for mm in range(len(corners)):
+                idx1 = mm
+                if mm == len(corners)-1:
                     idx2 = 0
                 else:
-                    idx2 = jj+1
+                    idx2 = mm+1
                 ax.plot([corners[idx1][0],corners[idx2][0]],
-                        [corners[idx1][1],corners[idx2][1]],'k-')
+                        [corners[idx1][1],corners[idx2][1]],'k-',alpha=0.1)
 
-    for jj, row in enumerate(crossall):
-        ii, kk, ll, cc, val, nvald = row
-        if kk in [1,3]:
-            xplus = xsize*1.0
-        else:
-            xplus = 0.0
-        if kk in [2,3]:
-            yplus = ysize*1.0
-        else:
-            yplus = 0.0
-        xval1 = ii * 2*xsize + xplus + cc
-        yval1 = ii * 2*ysize + yplus + ysize/2.0
+    for qid1 in qids:
+        ii, kk = np.divmod(qid1,4)
+        for qid2 in qids:
+            jj, ll = np.divmod(qid2,4)
+            idx = np.where((crossall[:,0] == ii) & (crossall[:,2] == kk) &
+                           (crossall[:,1] == jj) & (crossall[:,3] == ll))[0]
+            if len(idx) == 0:
+                continue
+            val = np.median(crossall[idx,5])
+            nvald = len(idx)
 
-        if ll in [1,3]:
-            xplus = xsize*1.0
-        else:
-            xplus = 0.0
-        if ll in [2,3]:
-            yplus = ysize*1.0
-        else:
-            yplus = 0.0
-        xval2 = ii * 2*xsize + xplus + cc
-        yval2 = ii * 2*ysize + yplus + ysize/2.0
-
-        colorVal = scalarMap.to_rgba(val)
-        ax.arrow(xval1, yval1, xval2-xval1, yval2-yval1, color=colorVal,
-                 edgecolor=colorVal,
-                 width=0.1,
-                 head_width=100.0)
+            xval = qid1 * xsize + xsize/2.0
+            yval = qid2 * ysize + ysize/2.0 
+    
+            colorVal = scalarMap.to_rgba(val)
+            ax.scatter(xval, yval, s=nvald, c=np.atleast_2d(colorVal))
 
     cbar = matplotlib.colorbar.ColorbarBase(axc, cmap=cmap,
                                             norm=cNorm,orientation='vertical')
+    ax.set_xticks([], [])
+    ax.set_yticks([], [])
 
     plotName = os.path.join(baseoutdir,'crosstalk.pdf')
     plt.savefig(plotName)

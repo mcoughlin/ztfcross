@@ -209,8 +209,12 @@ for ii,ccdnum in enumerate(ccdnums):
             rawimage1, rawimage2 = raw[kk], raw[ll]
 
             ycols, xcols = rawimage1.shape
-            cross = np.empty((0,3))
+            imagesat = np.zeros(rawimage1.shape)
+            imagesat[rawimage1 < 61000] = 0
+            imagesat[rawimage1 > 61000] = 1
+            cnts = np.sum(imagesat, axis=0)
             for cc in range(xcols):
+                if cnts[cc] < 100: continue
                 aggressor, feature = rawimage1[:,cc], rawimage2[:,cc]
 
                 xmin = np.max([0, int(cc - 5)])
@@ -227,11 +231,9 @@ for ii,ccdnum in enumerate(ccdnums):
                                 (np.abs(bkg1) <= 100) &
                                 (np.abs(bkg2) <= 100))[0]
 
-                if len(idx) > 0:
+                if len(idx) > 100:
                     bkg = (bkg1+bkg2)/2.0
-
                     val = np.median(feature[idx]) - np.median(bkg[idx])
-                    cross = np.append(cross, np.atleast_2d([cc,val,len(idx)]), axis=0)
 
                     if (len(idx) > 100) and (np.abs(val) > 10):
                         crossall = np.append(crossall, np.atleast_2d([ii,kk,ll,cc,val,len(idx)]), axis=0)

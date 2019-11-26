@@ -3,9 +3,26 @@ import os, sys
 import glob
 import numpy as np
 
+import matplotlib
+#matplotlib.rc('text', usetex=True)
+matplotlib.use('Agg')
+matplotlib.rcParams.update({'font.size': 16})
+matplotlib.rcParams['contour.negative_linestyle'] = 'solid'
+import matplotlib.colors as colors
+import matplotlib.cm as cmx
+import matplotlib.pyplot as plt
+from matplotlib.colors import LogNorm
+from mpl_toolkits.axes_grid1 import make_axes_locatable
+
 datadirs = glob.glob("../data/1027/*")
 baseoutdir = "../output"
 
+doPlots = True
+doAnalysis = False
+ccdnums = np.arange(1,17)
+kks = [0,1,2,3]
+
+crossall = np.empty((0,6))
 for datadir in datadirs:
     dataDirSplit = list(filter(None,datadir.split("/")))
     imagenum = dataDirSplit[-1]
@@ -14,11 +31,106 @@ for datadir in datadirs:
     outdir = os.path.join(baseoutdir, datenum, imagenum)
 
     filename = os.path.join(outdir,'crosstalk.dat')
-    if os.path.isfile(filename):
-        print('%s already exists... continuing.' % filename)
+
+    if doAnalysis:
+        if not os.path.isfile(filename):
+            system_call = "python ztfcross_compute --doPlots --doImages --dataDir %s" % datadir
+            print(system_call)
+            os.system(system_call)
+        else:
+            print('%s already exists... continuing.' % filename)
+            continue
+
+    if not os.path.isfile(filename):
+        continue
+    data_out = np.loadtxt(filename)
+    if data_out.size == 0:
         continue
 
-    system_call = "python ztfcross_compute --doPlots --doImages --dataDir %s" % datadir
-    print(system_call)
-    os.system(system_call)
+    crossall = np.vstack((crossall, data_out))
 
+outfile = os.path.join(baseoutdir,'crosstalk.dat')
+fid = open(outfile, 'w')
+for jj, row in enumerate(crossall):
+    ii, kk, ll, cc, val, nvald = row
+    fid.write('%d %d %d %d %.5f %d\n' %(ii, kk, ll, cc, val, nvald))
+fid.close()
+
+if doPlots:
+    xsize, ysize = 3072, 3080
+
+    alpha = 0.4
+    color='k'
+    edgecolor='k'
+
+    cmap = plt.cm.jet
+    cNorm  = colors.Normalize(vmin=np.min(crossall[:,4]), vmax=np.max(crossall[:,4]))
+    scalarMap = cmx.ScalarMappable(norm=cNorm,cmap=cmap)
+
+    fig = plt.figure(figsize=(8,8))
+    ax  = fig.add_axes([0.1, 0.1, 0.7, 0.85]) # [left, bottom, width, height]
+    axc = fig.add_axes([0.85, 0.10, 0.05, 0.85])
+
+    for ii,ccdnum in enumerate(ccdnums):
+        for kk in [0,1,2,3]:
+            if kk in [1,3]:
+                xplus = xsize*1.0
+            else:
+                xplus = 0.0
+            if kk in [2,3]:
+                yplus = ysize*1.0
+            else:
+                yplus = 0.0
+            xcorners = (ii * 2*xsize + xplus, ii * 2*xsize + xsize + xplus)
+            ycorners = (ii * 2*ysize + yplus, ii * 2*ysize + ysize + yplus)
+            corners = []
+            for x in xcorners:
+                for y in ycorners:
+                    corners.append([x,y])
+            corners = [corners[0], corners[1], corners[3], corners[2]]
+            corners = np.array(corners)
+            for jj in range(len(corners)):
+                idx1 = jj
+                if jj == len(corners)-1:
+                    idx2 = 0
+                else:
+                    idx2 = jj+1
+                ax.plot([corners[idx1][0],corners[idx2][0]],
+                        [corners[idx1][1],corners[idx2][1]],'k-')
+
+    for jj, row in enumerate(crossall):
+        ii, kk, ll, cc, val, nvald = row
+        if kk in [1,3]:
+            xplus = xsize*1.0
+        else:
+            xplus = 0.0
+        if kk in [2,3]:
+            yplus = ysize*1.0
+        else:
+            yplus = 0.0
+        xval1 = ii * 2*xsize + xplus + cc
+        yval1 = ii * 2*ysize + yplus + ysize/2.0
+
+        if ll in [1,3]:
+            xplus = xsize*1.0
+        else:
+            xplus = 0.0
+        if ll in [2,3]:
+            yplus = ysize*1.0
+        else:
+            yplus = 0.0
+        xval2 = ii * 2*xsize + xplus + cc
+        yval2 = ii * 2*ysize + yplus + ysize/2.0
+
+        colorVal = scalarMap.to_rgba(val)
+        ax.arrow(xval1, yval1, xval2-xval1, yval2-yval1, color=colorVal,
+                 edgecolor=colorVal,
+                 width=0.1,
+                 head_width=100.0)
+
+    cbar = matplotlib.colorbar.ColorbarBase(axc, cmap=cmap,
+                                            norm=cNorm,orientation='vertical')
+
+    plotName = os.path.join(baseoutdir,'crosstalk.pdf')
+    plt.savefig(plotName)
+    plt.close()

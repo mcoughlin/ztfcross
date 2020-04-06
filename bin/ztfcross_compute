@@ -39,6 +39,9 @@ def parse_commandline():
     parser.add_option("-d","--dataDir",default="../data/1027/081447/")
     parser.add_option("-o","--outputDir",default="../output")
 
+    parser.add_option("-s","--saturation_min",default=60000, type=int)
+    parser.add_option("-e","--saturation_max",default=68000, type=int)
+
     opts, args = parser.parse_args()
 
     return opts
@@ -136,12 +139,15 @@ opts = parse_commandline()
 # ----- settings ------ #
 datadir = opts.dataDir
 baseoutdir = opts.outputDir
+saturation_min = opts.saturation_min
+saturation_max = opts.saturation_max
 
 dataDirSplit = list(filter(None,datadir.split("/")))
 imagenum = dataDirSplit[-1]
 datenum = dataDirSplit[-2]
 
-outdir = os.path.join(baseoutdir, datenum, imagenum)
+outdir = os.path.join(baseoutdir, datenum, imagenum,
+                      "%d_%d"%(saturation_min, saturation_max))
 imagedir = os.path.join(outdir,'images')
 fitsdir = os.path.join(outdir,'fits')
 
@@ -225,8 +231,8 @@ for ii,ccdnum1 in enumerate(ccdnums):
     
                 ycols, xcols = rawimage1.shape
                 imagesat = np.zeros(rawimage1.shape)
-                imagesat[rawimage1 < 61000] = 0
-                imagesat[rawimage1 > 61000] = 1
+                imagesat[(rawimage1 < saturation_min) | (rawimage1 > saturation_max)] = 0
+                imagesat[(rawimage1 > saturation_min) & (rawimage1 < saturation_max)] = 1
                 cnts = np.sum(imagesat, axis=0)
                 for cc in range(xcols):
                     if cnts[cc] < 100: continue
@@ -241,11 +247,13 @@ for ii,ccdnum1 in enumerate(ccdnums):
                     #idx = np.where( (aggressor >= 61000) &
                     #                (np.abs(feature) <= 100) )[0]
                     
-                    idx = np.where( (aggressor >= 61000) &
+                    idx = np.where( (aggressor >= saturation_min) &
+                                    (aggressor <= saturation_max) &
                                     (np.abs(feature) <= 100) &
                                     (np.abs(bkg1) <= 100) &
                                     (np.abs(bkg2) <= 100))[0]
-    
+                    print(len(idx), len(np.where( (aggressor >= saturation_min) & (aggressor <= saturation_max))[0]), len(np.where(np.abs(feature) <= 100)[0]), len(np.where(np.abs(bkg1) <= 100)[0]), len(np.where(np.abs(bkg2) <= 100)[0]))
+
                     if len(idx) > 100:
                         bkg = (bkg1+bkg2)/2.0
                         val = np.median(feature[idx]) - np.median(bkg[idx])

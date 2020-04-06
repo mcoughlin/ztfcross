@@ -1,7 +1,9 @@
 
 import os, sys
 import glob
+import optparse
 import numpy as np
+import glob
 
 import matplotlib
 #matplotlib.rc('text', usetex=True)
@@ -14,8 +16,24 @@ import matplotlib.pyplot as plt
 from matplotlib.colors import LogNorm
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 
-basedatadir = "/home/mcoughlin/ZTF/ztfcross/data/1027"
-baseoutdir = "/home/mcoughlin/ZTF/ztfcross/output"
+
+def parse_commandline():
+    """
+    Parse the options given on the command-line.
+    """
+    parser = optparse.OptionParser()
+    parser.add_option("-d","--dataDir",default="/home/mcoughlin/ZTF/ztfcross/data/1027")
+    parser.add_option("-o","--outputDir",default="/home/mcoughlin/ZTF/ztfcross/output")
+
+    opts, args = parser.parse_args()
+
+    return opts
+
+# Parse command line
+opts = parse_commandline()
+
+basedatadir = opts.dataDir
+baseoutdir = opts.outputDir
 
 datadirs = glob.glob(os.path.join(basedatadir,"*"))
 
@@ -39,6 +57,10 @@ fid1 = open(condorsh,'w')
 
 crossall = np.empty((0,7))
 for datadir in datadirs:
+    fitsfz = glob.glob(os.path.join(datadir,'*.fits.fz'))
+    if len(fitsfz) == 0:
+        continue
+
     dataDirSplit = list(filter(None,datadir.split("/")))
     imagenum = dataDirSplit[-1]
     datenum = dataDirSplit[-2]
@@ -74,7 +96,7 @@ fid.write('request_cpus = 1\n');
 fid.write('accounting_group = ligo.dev.o2.burst.allsky.stamp\n');
 fid.write('notification = never\n');
 fid.write('getenv = true\n');
-fid.write('log = /local/mcoughlin/ztfcross.log\n')
+fid.write('log = /local/michael.coughlin/ztfcross.log\n')
 fid.write('+MaxHours = 24\n');
 fid.write('universe = vanilla\n');
 fid.write('queue 1\n');

@@ -1,5 +1,6 @@
 
 import os, sys
+import optparse
 import glob
 import numpy as np
 
@@ -14,14 +15,34 @@ import matplotlib.pyplot as plt
 from matplotlib.colors import LogNorm
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 
-basedatadir = "/home/mcoughlin/ZTF/ztfcross/data/1027"
-baseoutdir = "/home/mcoughlin/ZTF/ztfcross/output"
+def parse_commandline():
+    """
+    Parse the options given on the command-line.
+    """
+    parser = optparse.OptionParser()
+    parser.add_option("--doPlots",  action="store_true", default=False)
+    parser.add_option("--doAnalysis",  action="store_true", default=False)
+
+    parser.add_option("-d","--dataDir",default="/home/mcoughlin/ZTF/ztfcross/data/1027")
+    parser.add_option("-o","--outputDir",default="/home/mcoughlin/ZTF/ztfcross/output")
+
+    parser.add_option("-s","--saturation_min",default=60000, type=int)
+    parser.add_option("-e","--saturation_max",default=68000, type=int)
+
+    opts, args = parser.parse_args()
+
+    return opts
+
+# Parse command line
+opts = parse_commandline()
+
+basedatadir = opts.dataDir
+baseoutdir = opts.outputDir
+saturation_min = opts.saturation_min
+saturation_max = opts.saturation_max
 
 datadirs = glob.glob(os.path.join(basedatadir,"*"))
 
-doPlots = True
-doAnalysis = False
-#doAnalysis = True
 ccdnums = np.arange(1,17)
 kks = [0,1,2,3]
 
@@ -31,14 +52,17 @@ for datadir in datadirs:
     imagenum = dataDirSplit[-1]
     datenum = dataDirSplit[-2]
 
-    outdir = os.path.join(baseoutdir, datenum, imagenum)
+    outdir = os.path.join(baseoutdir, datenum, imagenum,
+                          "%d_%d"%(saturation_min, saturation_max))
 
     filename = os.path.join(outdir,'crosstalk.dat')
 
-    if doAnalysis:
-        if not os.path.isfile(filename):
+    if opts.doAnalysis:
+        #if not os.path.isfile(filename):
+        if True:
             system_call = "python ztfcross_compute --doPlots --doImages --dataDir %s" % datadir
             print(system_call)
+            print(stop)
             os.system(system_call)
         else:
             print('%s already exists... continuing.' % filename)
@@ -52,14 +76,9 @@ for datadir in datadirs:
 
     crossall = np.vstack((crossall, data_out))
 
-outfile = os.path.join(baseoutdir,'crosstalk.dat')
-fid = open(outfile, 'w')
-for row in crossall:
-    ii, jj, kk, ll, cc, val, nvald = row
-    fid.write('%d %d %d %d %d %.5f %d\n' %(ii, jj, kk, ll, cc, val, nvald))
-fid.close()
+if opts.doPlots:
+    outdir = os.path.join(baseoutdir, datenum)
 
-if doPlots:
     xsize, ysize = 3072, 3080
 
     alpha = 0.4
@@ -114,6 +133,8 @@ if doPlots:
                 ax.plot([corners[idx1][0],corners[idx2][0]],
                         [corners[idx1][1],corners[idx2][1]],'k-',alpha=0.1)
 
+    outfile = os.path.join(outdir,'crosstalk.dat')
+    fid = open(outfile, 'w')
     for qid1 in qids:
         ii, kk = np.divmod(qid1,4)
         for qid2 in qids:
@@ -130,12 +151,15 @@ if doPlots:
     
             colorVal = scalarMap.to_rgba(val)
             ax.scatter(xval, yval, s=nvald, c=np.atleast_2d(colorVal))
+  
+            fid.write('%d %d %d %d %.5f %d\n' %(ii, jj, kk, ll, val, nvald))
+    fid.close()
 
     cbar = matplotlib.colorbar.ColorbarBase(axc, cmap=cmap,
                                             norm=cNorm,orientation='vertical')
     ax.set_xticks([], [])
     ax.set_yticks([], [])
 
-    plotName = os.path.join(baseoutdir,'crosstalk.pdf')
+    plotName = os.path.join(outdir,'crosstalk.pdf')
     plt.savefig(plotName)
     plt.close()
